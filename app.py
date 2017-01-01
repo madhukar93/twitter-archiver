@@ -3,6 +3,8 @@ import config
 import logging
 import shelve
 import time
+from contextlib import closing
+
 # from collections import OrderedDict
 logging.basicConfig(filename='archiver.log',
                     level=getattr(logging, config.LOG_LEVEL))
@@ -13,15 +15,15 @@ API = tweepy.API(auth_handler=AUTH)
 
 
 class StreamListener(tweepy.StreamListener):
-    def __init__(self, store, *args, **kwargs):
-        self._store = store
+    def __init__(self, store_path, *args, **kwargs):
+        self._store_path = store_path
         super(StreamListener, self).__init__(*args, **kwargs)
 
     def on_status(self, status):
         # write each status in a new file
         # write each attached image in a new file
         print status.text
-        TweetStore(self._store, user=status.user).add(status)
+        TweetStore(self._store_path, user=status.user).add(status)
 
     def on_error(self, status_code):
         print "error from twitter API {}".format(status_code)
@@ -31,19 +33,17 @@ class StreamListener(tweepy.StreamListener):
 
 class TweetStore(object):
 
-    def __init__(self, shelf, user, tweets=None, api=None):
+    def __init__(self, store_path, user, api=None):
         assert isinstance(user, tweepy.models.User)
-        self._tweets = shelf.get(str(user.id_str), [])
-        if tweets:
-            assert isinstance(tweets, tweepy.models.ResultSet)
-            self._tweets |= tweets.reverse()
+        self._tweets = []
         self._user = user
-        self._store = shelf
+        self._store_path = store_path
         self.api = api
         self._user = user
 
     def save(self):
-        self._store[str(self._user.id_str)] = self._tweets
+        with closing(shelve.open(self._store_path)) as store:
+            store[str(self._user.id_str)] = self._tweets
 
     def add(self, tweet):
         self._tweets.append(tweet)
@@ -68,16 +68,19 @@ class TweetStore(object):
         return self._user
 
 
-if __name__ == '__main__':
-    shelf = shelve.open('user_tweets_store.shelf')
-    listener = StreamListener(shelf)
+def run():
+    shelf_path = 'user_tweets_store.shelf'
+    listener = StreamListener(shelf_path)
     streamer = tweepy.Stream(auth=AUTH,
                              listener=listener)
     user_ids_to_follow = []
     for screen_name in config.SCREEN_NAMES_TO_FOLLOW:
         user = API.get_user(screen_name)
-        TweetStore(user=user, shelf=shelf, api=API).update()
+        TweetStore(user=user, store_path=shelf_path, api=API).update()
         user_ids_to_follow.append(user.id_str)
     print "following IDs: " + ", ".join(user_ids_to_follow)
     print "Listening for statuses"
     streamer.filter(follow=user_ids_to_follow, async=True)
+
+if __name__ == '__main__':
+    run()
